@@ -974,34 +974,30 @@ end
 --[[--
 Get index of nearest word box around `pos`.
 --]]
-local function inside_box(box, pos)
-    local x, y = pos.x, pos.y
+local function box_distance(box, x, y)
     if box.x0 <= x and box.y0 <= y and box.x1 >= x and box.y1 >= y then
-        return true
-    end
-    return false
-end
-
-local function box_distance(box, pos)
-    if inside_box(box, pos) then
         return 0
     else
-        local x0, y0 = pos.x, pos.y
-        local x1, y1 = (box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2
-        return (x0 - x1)*(x0 - x1) + (y0 - y1)*(y0 - y1)
+        local cx, cy = (box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2
+        return (x - cx) * (x - cx) + (y - cy) * (y - cy)
     end
 end
 
 local function getWordBoxIndices(boxes, pos)
-    local m, n = 1, 1
+    local m, n
+    local best_dist = math.huge
+    local x, y = pos.x, pos.y
     for i = 1, #boxes do
         for j = 1, #boxes[i] do
-            if box_distance(boxes[i][j], pos) < box_distance(boxes[m][n], pos) then
+            local dist = box_distance(boxes[i][j], x, y)
+            if dist < best_dist then
                 m, n = i, j
+                best_dist = dist
+                if best_dist == 0 then return m, n end
             end
         end
     end
-    return m, n
+    return m or 1, n or 1
 end
 
 --[[--
