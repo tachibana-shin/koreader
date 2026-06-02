@@ -65,11 +65,11 @@ defaults:
 
 # Keep this list in sync with `make TARGET=...` in base/README.md.
 # Add new targets here and they will be built on every push / dispatch.
-# Each entry: {"target":..., "runner":..., "package":...} where package is one of
-# "tar.xz", "zip", "appimage". KINDLE targets always get .zip+.txz+.tgz.
+# The wrapper `{"include":[...]}` is REQUIRED for fromJson()-based matrix:
+# see https://docs.github.com/en/actions/using-jobs/using-a-matrix-for-your-jobs#using-a-matrix-strategy
 env:
-  FULL_MATRIX: '[{"target":"emulator","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindle","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlehf","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlepw2","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobov5","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobov4","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobo","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"pocketbook","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"cervantes","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"appimage","runner":"ubuntu-22.04","package":"appimage"},{"target":"win32","runner":"ubuntu-22.04","package":"zip"},{"target":"kindle-legacy","runner":"ubuntu-22.04","package":"tar.xz"}]'
-  PR_FAST_MATRIX: '[{"target":"emulator","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlepw2","runner":"ubuntu-22.04","package":"tar.xz"}]'
+  FULL_MATRIX: '{"include":[{"target":"emulator","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindle","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlehf","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlepw2","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobov5","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobov4","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobo","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"pocketbook","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"cervantes","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"appimage","runner":"ubuntu-22.04","package":"appimage"},{"target":"win32","runner":"ubuntu-22.04","package":"zip"},{"target":"kindle-legacy","runner":"ubuntu-22.04","package":"tar.xz"}]}'
+  PR_FAST_MATRIX: '{"include":[{"target":"emulator","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlepw2","runner":"ubuntu-22.04","package":"tar.xz"}]}'
   CCACHE_MAXSIZE: '512M'
 
 jobs:
@@ -87,7 +87,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.target }}" ]; then
             echo "Manual run for target: ${{ inputs.target }}"
-            matrix=$(echo "${{ env.FULL_MATRIX }}" | jq -c --arg t "${{ inputs.target }}" '[ .[] | select(.target == $t) ]')
+            # Keep the {"include":...} wrapper required by fromJson-based matrix.
+            matrix=$(echo "${{ env.FULL_MATRIX }}" | jq -c --arg t "${{ inputs.target }}" '{include: [.include[] | select(.target == $t)]}')
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "PR: using fast matrix"
             matrix='${{ env.PR_FAST_MATRIX }}'
@@ -95,8 +96,8 @@ jobs:
             echo "Push/dispatch (no target): using full matrix"
             matrix='${{ env.FULL_MATRIX }}'
           fi
-          # Validate non-empty
-          count=$(echo "$matrix" | jq 'length')
+          # Validate that the include array is non-empty.
+          count=$(echo "$matrix" | jq '.include | length')
           if [ "$count" = "0" ]; then
             echo "::error::No targets matched."
             exit 1
