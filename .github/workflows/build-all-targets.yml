@@ -136,28 +136,40 @@ jobs:
 
       - name: Install system packages
         # Notes on package selection:
-        #   * gcc-multilib/g++-multilib: required because luajit uses
+        #   * gcc-11-multilib/g++-11-multilib: required because luajit uses
         #     `gcc -m32` for HOST_CC when cross-compiling 32-bit ARM
         #     targets (see base/thirdparty/luajit/CMakeLists.txt:45).
+        #     Use the explicit gcc-11-* metapackage to avoid the version
+        #     conflict between the generic `gcc-multilib` and the
+        #     `gcc-11-arm-linux-gnueabihf` cross compiler on Ubuntu 22.04.
         #   * Cross toolchains below cover all TARGETs in the matrix.
+        #   * Install order matters: multilib first, then cross toolchains,
+        #     because apt can't resolve them in a single transaction.
         run: |
           set -xe
           sudo apt-get update
+          # 1) Build tools + multilib (no cross compilers yet).
           sudo apt-get install -y --no-install-recommends \
             autoconf automake build-essential ca-certificates \
             cmake gettext git jq libtool libtool-bin \
             meson nasm ninja-build patch pkg-config unzip wget \
             ccache p7zip-full xz-utils \
-            gcc-multilib g++-multilib \
+            gcc-11-multilib g++-11-multilib \
+            libfuse2 file
+          # 2) Cross toolchains (separate transaction to avoid version conflicts).
+          sudo apt-get install -y --no-install-recommends \
             gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
             gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \
-            gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
-            libfuse2 file
+            gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
           # Sanity check: critical tools must be on PATH.
           for tool in ccache cmake gcc jq 7z tar xz make ninja meson; do
             command -v "$tool" >/dev/null 2>&1 || { echo "::error::Missing tool: $tool"; exit 1; }
           done
-          echo "All required tools installed."
+          # Verify multilib is functional.
+          echo 'int main(){return 0;}' > /tmp/_m32.c
+          gcc -m32 /tmp/_m32.c -o /tmp/_m32 || { echo "::error::gcc -m32 failed"; exit 1; }
+          rm -f /tmp/_m32.c /tmp/_m32
+          echo "All required tools installed (including multilib)."
 
       # }}}
 
