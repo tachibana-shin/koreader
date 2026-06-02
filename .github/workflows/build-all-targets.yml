@@ -153,6 +153,11 @@ jobs:
             gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \
             gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
             libfuse2 file
+          # Sanity check: critical tools must be on PATH.
+          for tool in ccache cmake gcc jq 7z tar xz make ninja meson; do
+            command -v "$tool" >/dev/null 2>&1 || { echo "::error::Missing tool: $tool"; exit 1; }
+          done
+          echo "All required tools installed."
 
       # }}}
 
@@ -168,7 +173,11 @@ jobs:
 
       - name: Setup ccache
         run: |
-          set -xe
+          if ! command -v ccache >/dev/null 2>&1; then
+            echo "::error::ccache not found. The apt install step likely failed."
+            echo "::error::Check the install step logs for 'no such file' or 'unable to locate' errors."
+            exit 1
+          fi
           ccache --version
           ccache --zero-stats
           ccache --max-size=${{ env.CCACHE_MAXSIZE }}
@@ -250,7 +259,12 @@ jobs:
 
       - name: Show ccache stats
         if: always()
-        run: ccache --show-stats --verbose
+        run: |
+          if command -v ccache >/dev/null 2>&1; then
+            ccache --show-stats --verbose
+          else
+            echo "ccache not installed; skipping stats."
+          fi
 
       - name: Save ccache
         if: success()
