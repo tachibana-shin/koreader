@@ -135,6 +135,11 @@ jobs:
       # System packages: build tools + cross toolchains. {{{
 
       - name: Install system packages
+        # Notes on package selection:
+        #   * gcc-multilib/g++-multilib: required because luajit uses
+        #     `gcc -m32` for HOST_CC when cross-compiling 32-bit ARM
+        #     targets (see base/thirdparty/luajit/CMakeLists.txt:45).
+        #   * Cross toolchains below cover all TARGETs in the matrix.
         run: |
           set -xe
           sudo apt-get update
@@ -143,6 +148,7 @@ jobs:
             cmake gettext git jq libtool libtool-bin \
             meson nasm ninja-build patch pkg-config unzip wget \
             ccache p7zip-full xz-utils \
+            gcc-multilib g++-multilib \
             gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
             gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \
             gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
