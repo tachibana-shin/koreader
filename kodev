@@ -79,6 +79,13 @@ function run() {
 
 function run_make() {
     local cmd=(make)
+    if [[ "${TARGET}" == "kindlepw2" ]]; then
+        local a9_aggressive_flags="-march=armv7-a -mtune=cortex-a9 -mfpu=neon -mfloat-abi=softfp -mthumb -O3 -fomit-frame-pointer -ffast-math"
+        export CFLAGS="${a9_aggressive_flags}"
+        export CXXFLAGS="${a9_aggressive_flags}"
+        export CHOST_FLAGS="${a9_aggressive_flags}"
+    fi
+
     if [[ ${opt_dry_run} -ne 0 ]]; then
         cmd+=(-n)
     fi
