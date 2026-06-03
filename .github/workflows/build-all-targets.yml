@@ -119,6 +119,7 @@ jobs:
       matrix: ${{ fromJson(needs.setup-matrix.outputs.matrix) }}
     env:
       CLICOLOR_FORCE: '1'
+      KOVERBOSE: '1'
       MAKEFLAGS: "OUTPUT_DIR=build INSTALL_DIR=install-${{ matrix.target }} PARALLEL_JOBS=4"
       PARALLEL_JOBS: '4'
       TARGET: ${{ matrix.target }}
