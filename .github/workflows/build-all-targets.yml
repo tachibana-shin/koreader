@@ -2,12 +2,12 @@
 #
 # Triggers:
 #   - workflow_dispatch: manual run with optional target selector
-#   - push / pull_request: quick smoke build (emulator + kindlepw2)
+#   - push / pull_request: quick smoke build (linux + kindlepw2)
 #
 # Artifacts are uploaded per job (e.g. koreader-kindlepw2-...-linux.tar.xz,
 # koreander-appimage-...-x86_64.AppImage, koreader-kindle-...-arm.tar.xz, etc.).
 #
-# Targets built (matrix): emulator, kindle, kindlehf, kindlepw2, kindle-legacy,
+# Targets built (matrix): linux (emulator), kindle, kindlehf, kindlepw2, kindle-legacy,
 # kobo, kobov4, kobov5, pocketbook, cervantes, appimage, win32.
 # (Android is built separately in build.yml / .circleci because it needs the
 # Gradle Android SDK toolchain.)
@@ -24,7 +24,7 @@ on:
         default: ''
         options:
           - ''
-          - emulator
+          - linux
           - kindle
           - kindlehf
           - kindlepw2
@@ -68,8 +68,14 @@ defaults:
 # The wrapper `{"include":[...]}` is REQUIRED for fromJson()-based matrix:
 # see https://docs.github.com/en/actions/using-jobs/using-a-matrix-for-your-jobs#using-a-matrix-strategy
 env:
-  FULL_MATRIX: '{"include":[{"target":"emulator","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindle","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlehf","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlepw2","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobov5","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobov4","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobo","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"pocketbook","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"cervantes","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"appimage","runner":"ubuntu-22.04","package":"appimage"},{"target":"win32","runner":"ubuntu-22.04","package":"zip"},{"target":"kindle-legacy","runner":"ubuntu-22.04","package":"tar.xz"}]}'
-  PR_FAST_MATRIX: '{"include":[{"target":"emulator","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlepw2","runner":"ubuntu-22.04","package":"tar.xz"}]}'
+  # Valid make targets (see base/Makefile.defs):
+  #   linux = emulator (native x86_64 w/ SDL)
+  #   kindle, kindlepw2, kindlehf, kindle-legacy = Kindle
+  #   kobo, kobov4, kobov5 = Kobo
+  #   pocketbook, cervantes = other E-ink
+  #   appimage, win32 = desktop
+  FULL_MATRIX: '{"include":[{"target":"linux","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindle","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlehf","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlepw2","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobov5","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobov4","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobo","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"pocketbook","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"cervantes","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"appimage","runner":"ubuntu-22.04","package":"appimage"},{"target":"win32","runner":"ubuntu-22.04","package":"zip"},{"target":"kindle-legacy","runner":"ubuntu-22.04","package":"tar.xz"}]}'
+  PR_FAST_MATRIX: '{"include":[{"target":"linux","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlepw2","runner":"ubuntu-22.04","package":"tar.xz"}]}'
   CCACHE_MAXSIZE: '512M'
 
 jobs:
@@ -120,7 +126,7 @@ jobs:
     env:
       CLICOLOR_FORCE: '1'
       KOVERBOSE: '1'
-      MAKEFLAGS: "OUTPUT_DIR=build INSTALL_DIR=install-${{ matrix.target }} PARALLEL_JOBS=4"
+      INSTALL_DIR: install-${{ matrix.target }}
       PARALLEL_JOBS: '4'
       TARGET: ${{ matrix.target }}
     steps:
@@ -196,25 +202,41 @@ jobs:
           ccache --max-size=${{ env.CCACHE_MAXSIZE }}
           ccache --show-config
 
-      - name: Restore build dir
-        uses: actions/cache@v4
-        with:
-          path: |
-            build-${{ matrix.target }}
-            install-${{ matrix.target }}
-          key: build-${{ matrix.target }}-${{ github.sha }}
-          restore-keys: |
-            build-${{ matrix.target }}-
-
       # }}}
 
       # Build the C/C++ kernel (`make base`). {{{
 
+      - name: Verify thirdparty source tree
+        run: |
+          set -xe
+          # Check that cmake thirdparty modules are present
+          ls -la base/thirdparty/cmake_modules/koenv.sh
+          ls -la base/thirdparty/luajit/
+          # Show target machine info
+          if [ "${{ matrix.target }}" = "linux" ]; then
+            gcc -dumpmachine
+          else
+            arm-linux-gnueabi-gcc -dumpmachine 2>/dev/null || echo "no generic arm TC"
+          fi
+
       - name: Build koreader-base (kernel)
+        env:
+          V: '1'
+          VERBOSE: '1'
         run: |
           set -xe
           make TARGET=${{ matrix.target }} fetchthirdparty
-          make TARGET=${{ matrix.target }} base
+          # Build with full output piped to log file for post-mortem analysis.
+          # Disable immediate exit on pipe failure so we can inspect PIPESTATUS.
+          set +e
+          make TARGET=${{ matrix.target }} base 2>&1 | tee /tmp/koreader-base-build.log | tail -500
+          rc=$${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::make base failed (exit=$rc). Full log follows..."
+            cat /tmp/koreader-base-build.log
+            exit "$rc"
+          fi
 
       # }}}
 
@@ -268,7 +290,7 @@ jobs:
 
       # }}}
 
-      # Cache: save ccache + build dir for next run. {{{
+      # Cache: save ccache for next run. {{{
 
       - name: Show ccache stats
         if: always()
@@ -286,15 +308,6 @@ jobs:
           path: ~/.cache/ccache
           key: ccache-${{ matrix.target }}-${{ github.sha }}
 
-      - name: Save build dir
-        if: success()
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            build-${{ matrix.target }}
-            install-${{ matrix.target }}
-          key: build-${{ matrix.target }}-${{ github.sha }}
-
       # }}}
 
       # Upload artifact. {{{
@@ -308,13 +321,13 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Upload build dir (no-packaging variant)
+      - name: Upload install dir (no-packaging variant)
         if: always() && needs.setup-matrix.outputs.skip_packaging == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: koreader-${{ matrix.target }}-build
+          name: koreader-${{ matrix.target }}-install
           path: |
-            build-${{ matrix.target }}
+            ${{ env.INSTALL_DIR }}
           retention-days: 3
 
       # }}}
