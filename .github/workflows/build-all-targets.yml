@@ -1,355 +1,51 @@
-# Build KOReader for all supported targets and upload artifacts.
-#
-# Triggers:
-#   - workflow_dispatch: manual run with optional target selector
-#   - push / pull_request: quick smoke build (linux + kindlepw2)
-#
-# Artifacts are uploaded per job (e.g. koreader-kindlepw2-...-linux.tar.xz,
-# koreander-appimage-...-x86_64.AppImage, koreader-kindle-...-arm.tar.xz, etc.).
-#
-# Targets built (matrix): linux (emulator), kindle, kindlehf, kindlepw2, kindle-legacy,
-# kobo, kobov4, kobov5, pocketbook, cervantes, appimage, win32.
-# (Android is built separately in build.yml / .circleci because it needs the
-# Gradle Android SDK toolchain.)
-
-name: build-all-targets
+name: Build KOReader for Kindle
 
 on:
   workflow_dispatch:
-    inputs:
-      target:
-        description: 'Target to build (leave blank = full matrix)'
-        required: false
-        type: choice
-        default: ''
-        options:
-          - ''
-          - linux
-          - kindle
-          - kindlehf
-          - kindlepw2
-          - kindle-legacy
-          - kobo
-          - kobov4
-          - kobov5
-          - pocketbook
-          - cervantes
-          - appimage
-          - win32
-      skip_packaging:
-        description: 'Skip packaging (build base only, no .7z / .zip / .AppImage)'
-        required: false
-        type: boolean
-        default: false
-  push:
-    branches: [master]
-    paths:
-      - 'base/**'
-      - 'Makefile'
-      - 'kodev'
-      - '.github/workflows/build-all-targets.yml'
-  pull_request:
-    paths:
-      - 'base/**'
-      - 'Makefile'
-      - 'kodev'
-      - '.github/workflows/build-all-targets.yml'
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-defaults:
-  run:
-    shell: bash
-
-# Keep this list in sync with `make TARGET=...` in base/README.md.
-# Add new targets here and they will be built on every push / dispatch.
-# The wrapper `{"include":[...]}` is REQUIRED for fromJson()-based matrix:
-# see https://docs.github.com/en/actions/using-jobs/using-a-matrix-for-your-jobs#using-a-matrix-strategy
-env:
-  # Valid make targets (see base/Makefile.defs):
-  #   linux = emulator (native x86_64 w/ SDL)
-  #   kindle, kindlepw2, kindlehf, kindle-legacy = Kindle
-  #   kobo, kobov4, kobov5 = Kobo
-  #   pocketbook, cervantes = other E-ink
-  #   appimage, win32 = desktop
-  FULL_MATRIX: '{"include":[{"target":"linux","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindle","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlehf","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlepw2","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobov5","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobov4","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kobo","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"pocketbook","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"cervantes","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"appimage","runner":"ubuntu-22.04","package":"appimage"},{"target":"win32","runner":"ubuntu-22.04","package":"zip"},{"target":"kindle-legacy","runner":"ubuntu-22.04","package":"tar.xz"}]}'
-  PR_FAST_MATRIX: '{"include":[{"target":"linux","runner":"ubuntu-22.04","package":"tar.xz"},{"target":"kindlepw2","runner":"ubuntu-22.04","package":"tar.xz"}]}'
-  CCACHE_MAXSIZE: '512M'
 
 jobs:
+  build:
+    runs-on: ubuntu-24.04
 
-  # Decide which targets to build based on the trigger event. {{{
-
-  setup-matrix:
-    name: Setup build matrix
-    runs-on: ubuntu-22.04
-    outputs:
-      matrix: ${{ steps.compute.outputs.matrix }}
-      skip_packaging: ${{ steps.compute.outputs.skip_packaging }}
     steps:
-      - id: compute
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.target }}" ]; then
-            echo "Manual run for target: ${{ inputs.target }}"
-            # Keep the {"include":...} wrapper required by fromJson-based matrix.
-            matrix=$(echo "${{ env.FULL_MATRIX }}" | jq -c --arg t "${{ inputs.target }}" '{include: [.include[] | select(.target == $t)]}')
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "PR: using fast matrix"
-            matrix='${{ env.PR_FAST_MATRIX }}'
-          else
-            echo "Push/dispatch (no target): using full matrix"
-            matrix='${{ env.FULL_MATRIX }}'
-          fi
-          # Validate that the include array is non-empty.
-          count=$(echo "$matrix" | jq '.include | length')
-          if [ "$count" = "0" ]; then
-            echo "::error::No targets matched."
-            exit 1
-          fi
-          echo "Matrix: $matrix"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "skip_packaging=${{ inputs.skip_packaging || 'false' }}" >> "$GITHUB_OUTPUT"
-
-  # }}}
-
-  # Reusable steps: install deps, fetch, ccache setup. {{{
-
-  build-target:
-    name: ${{ matrix.target }} (${{ matrix.runner }})
-    needs: setup-matrix
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.setup-matrix.outputs.matrix) }}
-    env:
-      CLICOLOR_FORCE: '1'
-      KOVERBOSE: '1'
-      INSTALL_DIR: install-${{ matrix.target }}
-      PARALLEL_JOBS: '4'
-      TARGET: ${{ matrix.target }}
-    steps:
-
-      - name: Checkout (with submodules)
+      - name: Checkout KOReader Source Code
         uses: actions/checkout@v4
         with:
-          clean: false
-          fetch-depth: 0
-          submodules: recursive
-          show-progress: false
+          submodules: 'recursive'
 
-      # System packages: build tools + cross toolchains. {{{
-
-      - name: Install system packages
-        # Notes on package selection:
-        #   * gcc-11-multilib/g++-11-multilib: required because luajit uses
-        #     `gcc -m32` for HOST_CC when cross-compiling 32-bit ARM
-        #     targets (see base/thirdparty/luajit/CMakeLists.txt:45).
-        #     Use the explicit gcc-11-* metapackage to avoid the version
-        #     conflict between the generic `gcc-multilib` and the
-        #     `gcc-11-arm-linux-gnueabihf` cross compiler on Ubuntu 22.04.
-        #   * Cross toolchains below cover all TARGETs in the matrix.
-        #   * Install order matters: multilib first, then cross toolchains,
-        #     because apt can't resolve them in a single transaction.
+      - name: Install System Dependencies
         run: |
-          set -xe
           sudo apt-get update
-          # 1) Build tools + multilib (no cross compilers yet).
-          sudo apt-get install -y --no-install-recommends \
-            autoconf automake build-essential ca-certificates \
-            cmake gettext git jq libtool libtool-bin \
-            meson nasm ninja-build patch pkg-config unzip wget \
-            ccache p7zip-full xz-utils \
-            gcc-11-multilib g++-11-multilib \
-            libfuse2 file
-          # 2) Cross toolchains (separate transaction to avoid version conflicts).
-          sudo apt-get install -y --no-install-recommends \
-            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
-            gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \
-            gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
-          # Sanity check: critical tools must be on PATH.
-          for tool in ccache cmake gcc jq 7z tar xz make ninja meson; do
-            command -v "$tool" >/dev/null 2>&1 || { echo "::error::Missing tool: $tool"; exit 1; }
-          done
-          # Verify multilib is functional.
-          echo 'int main(){return 0;}' > /tmp/_m32.c
-          gcc -m32 /tmp/_m32.c -o /tmp/_m32 || { echo "::error::gcc -m32 failed"; exit 1; }
-          rm -f /tmp/_m32.c /tmp/_m32
-          echo "All required tools installed (including multilib)."
+          sudo apt-get install -y subversion crossbuild-essential-armhf \
+            git wget unzip patch build-essential libtool-bin nasm \
+            automake cmake pkg-config gperf arachni libglib2.0-dev
 
-      # }}}
-
-      # Cache: ccache + build dir. {{{
-
-      - name: Restore ccache
+      - name: Cache Toolchain and Thirdparty
         uses: actions/cache@v4
         with:
-          path: ~/.cache/ccache
-          key: ccache-${{ matrix.target }}-${{ github.sha }}
-          restore-keys: |
-            ccache-${{ matrix.target }}-
-
-      - name: Setup ccache
-        run: |
-          if ! command -v ccache >/dev/null 2>&1; then
-            echo "::error::ccache not found. The apt install step likely failed."
-            echo "::error::Check the install step logs for 'no such file' or 'unable to locate' errors."
-            exit 1
-          fi
-          ccache --version
-          ccache --zero-stats
-          ccache --max-size=${{ env.CCACHE_MAXSIZE }}
-          ccache --show-config
-
-      # }}}
-
-      # Build the C/C++ kernel (`make base`). {{{
-
-      - name: Verify thirdparty source tree
-        run: |
-          set -xe
-          # Check that cmake thirdparty modules are present
-          ls -la base/thirdparty/cmake_modules/koenv.sh
-          ls -la base/thirdparty/luajit/
-          # Show target machine info
-          if [ "${{ matrix.target }}" = "linux" ]; then
-            gcc -dumpmachine
-          else
-            arm-linux-gnueabi-gcc -dumpmachine 2>/dev/null || echo "no generic arm TC"
-          fi
-
-      - name: Build koreader-base (kernel)
-        env:
-          V: '1'
-          VERBOSE: '1'
-        run: |
-          set -xe
-          make TARGET=${{ matrix.target }} fetchthirdparty
-          # Build with full output piped to log file for post-mortem analysis.
-          # Disable immediate exit on pipe failure so we can inspect PIPESTATUS.
-          set +e
-          make TARGET=${{ matrix.target }} base 2>&1 | tee /tmp/koreader-base-build.log | tail -500
-          rc=$${PIPESTATUS[0]}
-          set -e
-          if [ "$rc" -ne 0 ]; then
-            echo "::error::make base failed (exit=$rc). Full log follows..."
-            cat /tmp/koreader-base-build.log
-            exit "$rc"
-          fi
-
-      # }}}
-
-      # Build the full app + create install dir. {{{
-
-      - name: Build full KOReader
-        if: ${{ needs.setup-matrix.outputs.skip_packaging != 'true' }}
-        run: |
-          set -xe
-          make TARGET=${{ matrix.target }} all
-          # Echo what we built
-          ls -la install-${{ matrix.target }}/koreader/ 2>/dev/null | head -20
-          file install-${{ matrix.target }}/koreader/luajit 2>/dev/null || true
-
-      # }}}
-
-      # Package: .7z / .tar.xz / .AppImage / .zip depending on target. {{{
-
-      # Universal 7z + tar.xz — always produced from install dir.
-      - name: Package artifacts (universal)
-        if: ${{ needs.setup-matrix.outputs.skip_packaging != 'true' }}
-        run: |
-          set -xe
-          mkdir -p dist
-          cd install-${{ matrix.target }}
-          7z a -mx=9 "../dist/${{ matrix.target }}.7z" koreader
-          tar -cJf "../dist/${{ matrix.target }}.tar.xz" koreader
-          cd ..
-          ls -la dist/
-
-      # Native packages for targets with `make update` (produces .zip + .txz + .targz in CWD).
-      - name: Package native (.zip + .txz + .tgz)
-        if: ${{ needs.setup-matrix.outputs.skip_packaging != 'true' && (matrix.target == 'kindle' || matrix.target == 'kindlehf' || matrix.target == 'kindlepw2' || matrix.target == 'kindle-legacy' || matrix.target == 'kobo' || matrix.target == 'kobov4' || matrix.target == 'kobov5' || matrix.target == 'pocketbook' || matrix.target == 'cervantes') }}
-        run: |
-          set -xe
-          make TARGET=${{ matrix.target }} update
-          # Native packages land in project root.
-          find . -maxdepth 2 -name "koreader-*${{ matrix.target }}*.zip"   -exec cp -vt dist/ {} \;
-          find . -maxdepth 2 -name "koreader-*${{ matrix.target }}*.tar.xz" -exec cp -vt dist/ {} \;
-          find . -maxdepth 2 -name "koreader-*${{ matrix.target }}*.targz"  -exec cp -vt dist/ {} \;
-          ls -la dist/
-
-      # AppImage.
-      - name: Package AppImage
-        if: ${{ needs.setup-matrix.outputs.skip_packaging != 'true' && matrix.target == 'appimage' }}
-        run: |
-          set -xe
-          make TARGET=${{ matrix.target }} update-appimage
-          find install-${{ matrix.target }} -maxdepth 3 -name "*.AppImage" -exec cp -v {} dist/ \;
-          ls -la dist/
-
-      # }}}
-
-      # Cache: save ccache for next run. {{{
-
-      - name: Show ccache stats
-        if: always()
-        run: |
-          if command -v ccache >/dev/null 2>&1; then
-            ccache --show-stats --verbose
-          else
-            echo "ccache not installed; skipping stats."
-          fi
-
-      - name: Save ccache
-        if: success()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.cache/ccache
-          key: ccache-${{ matrix.target }}-${{ github.sha }}
-
-      # }}}
-
-      # Upload artifact. {{{
-
-      - name: Upload artifact
-        if: success() && needs.setup-matrix.outputs.skip_packaging != 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: koreader-${{ matrix.target }}
-          path: dist/*
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Upload install dir (no-packaging variant)
-        if: always() && needs.setup-matrix.outputs.skip_packaging == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: koreader-${{ matrix.target }}-install
           path: |
-            ${{ env.INSTALL_DIR }}
-          retention-days: 3
+            ~/.koxtoolchain
+            ./base/thirdparty
+          key: ${{ runner.os }}-koreader-kindle-${{ hashFiles('**/Makefile*', '**/vptc.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-koreader-kindle-
 
-      # }}}
-
-  # }}}
-
-  # Summary job: collect build status. {{{
-
-  build-summary:
-    name: Build summary
-    needs: build-target
-    if: always()
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Print summary
+      - name: Fetch Thirdparty Dependencies
         run: |
-          echo "## KOReader multi-target build summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Target | Result |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|--------|--------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "${{ toJSON(needs.build-target.result) }}"
+          make fetchthirdparty
 
-  # }}}
+      - name: Compile KOReader for Kindle
+        run: |
+          make TARGET=kindlepw2 release
+          
+      - name: Find and Package Artifact
+        run: |
+          mkdir ./output
+          cp dist/koreader-kindlehf-*.zip ./output/ || cp dist/koreader-kindle-*.zip ./output/ || true
 
-# vim: foldmethod=marker foldlevel=0
+      - name: Upload Kindle Installation File
+        uses: actions/upload-artifact@v4
+        with:
+          name: koreader-kindle-build
+          path: ./output/*
+          if-no-files-found: error
