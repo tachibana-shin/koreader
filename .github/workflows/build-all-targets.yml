@@ -30,9 +30,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-koreader-kindle-
 
+      - name: Setup Kindle Toolchain
+        run: |
+          make TARGET=kindlepw2 toolchain
+          
+          echo "$HOME/.koxtoolchain/kobo-arm-linux-gnueabi/bin" >> $GITHUB_PATH
+          echo "$HOME/.koxtoolchain/kindle-arm-linux-gnueabi/bin" >> $GITHUB_PATH
+          echo "$HOME/.koxtoolchain/kindlehf-arm-linux-gnueabihf/bin" >> $GITHUB_PATH
+
       - name: Fetch Thirdparty Dependencies
         run: |
-          make fetchthirdparty
+          make TARGET=kindlepw2 fetchthirdparty
 
       - name: Compile KOReader for Kindle
         run: |
