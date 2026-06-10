@@ -16,9 +16,9 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y subversion crossbuild-essential-armhf \
-            git wget unzip patch build-essential libtool-bin nasm \
-            automake cmake pkg-config gperf arachni libglib2.0-dev
+          sudo apt-get install -y subversion git wget unzip patch build-essential \
+            autoconf automake cmake libtool libtool-bin nasm luarocks gperf \
+            gettext libssl-dev libffi-dev pkg-config libglib2.0-dev
 
       - name: Cache Toolchain and Thirdparty
         uses: actions/cache@v4
